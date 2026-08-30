@@ -1,0 +1,147 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Platform {
+  INSTAGRAM
+  TIKTOK
+  YOUTUBE
+  FACEBOOK
+  TWITTER
+  LINKEDIN
+  PINTEREST
+  THREADS
+}
+
+enum PostStatus {
+  DRAFT
+  SCHEDULED
+  PUBLISHING
+  PUBLISHED
+  FAILED
+}
+
+model User {
+  id             String           @id @default(cuid())
+  email          String           @unique
+  name           String?
+  passwordHash   String
+  createdAt      DateTime         @default(now())
+  socialAccounts SocialAccount[]
+  contentItems   ContentItem[]
+}
+
+/// One connected social account (a user can connect multiple accounts per platform)
+model SocialAccount {
+  id                String    @id @default(cuid())
+  userId            String
+  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  platform          Platform
+  externalAccountId String
+  displayName       String
+  avatarUrl         String?
+  accessTokenEnc    String    // encrypted at rest, see lib/crypto.ts
+  refreshTokenEnc   String?
+  tokenExpiresAt    DateTime?
+  scopes            String[]
+  connectedAt       DateTime  @default(now())
+  isActive          Boolean   @default(true)
+
+  scheduledPosts    ScheduledPost[]
+  engagementSamples EngagementSample[]
+
+  @@unique([userId, platform, externalAccountId])
+}
+
+/// A raw uploaded piece of content (image or video) before platform-specific posts are derived from it
+model ContentItem {
+  id             String   @id @default(cuid())
+  userId         String
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  storagePath    String   // path in Supabase Storage
+  mediaType      String   // "image" | "video"
+  originalName   String
+  createdAt      DateTime @default(now())
+
+  analysis       ContentAnalysis?
+  scheduledPosts ScheduledPost[]
+}
+
+/// Gemini's "reading" of the content: description, detected themes, virality signals
+model ContentAnalysis {
+  id              String      @id @default(cuid())
+  contentItemId   String      @unique
+  contentItem     ContentItem @relation(fields: [contentItemId], references: [id], onDelete: Cascade)
+  summary         String
+  detectedThemes  String[]
+  suggestedTone   String
+  viralityScore   Int         // 0-100 heuristic score returned by the model
+  rawModelOutput  Json
+  createdAt       DateTime    @default(now())
+}
+
+/// A per-platform caption+hashtag variant generated for a piece of content, and its scheduled/publish state
+model ScheduledPost {
+  id                String         @id @default(cuid())
+  contentItemId     String
+  contentItem       ContentItem    @relation(fields: [contentItemId], references: [id], onDelete: Cascade)
+  socialAccountId   String
+  socialAccount     SocialAccount  @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
+  platform          Platform
+  caption           String
+  hashtags          String[]
+  hashtagPlacement  String         @default("inline") // "inline" | "first-comment"
+  status            PostStatus     @default(DRAFT)
+  scheduledFor      DateTime
+  qstashMessageId   String?
+  publishedAt       DateTime?
+  platformPostId    String?
+  failureReason     String?
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  /// Groups sibling caption variants generated for the same A/B test; null if this post
+  /// wasn't part of a test (single-variant posts are the common case).
+  abTestGroupId     String?
+  /// "A" / "B" / "C" — which variant this is within its abTestGroupId
+  variantLabel       String?
+  /// Set once a winner is picked from an A/B group; losing variants are cancelled before their scheduled time.
+  isWinner           Boolean?
+
+  metrics           PostMetric[]
+
+  @@index([abTestGroupId])
+}
+
+/// Engagement results pulled back from the platform after a post goes live. Powers both
+/// A/B winner selection and the per-account learning loop that feeds EngagementSample.
+model PostMetric {
+  id              String        @id @default(cuid())
+  scheduledPostId String
+  scheduledPost   ScheduledPost @relation(fields: [scheduledPostId], references: [id], onDelete: Cascade)
+  likes           Int           @default(0)
+  comments        Int           @default(0)
+  shares          Int           @default(0)
+  views           Int           @default(0)
+  engagementRate  Float         @default(0) // normalized 0-1, comparable across platforms
+  capturedAt      DateTime      @default(now())
+}
+
+/// Historical engagement-by-hour data pulled from each platform's insights API, used to compute
+/// per-account peak posting times instead of relying on generic published averages.
+model EngagementSample {
+  id              String        @id @default(cuid())
+  socialAccountId String
+  socialAccount   SocialAccount @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
+  dayOfWeek       Int           // 0-6
+  hourOfDay       Int           // 0-23 (in the account's local timezone)
+  engagementScore Float         // normalized engagement rate for that slot
+  sampledAt       DateTime      @default(now())
+
+  @@index([socialAccountId, dayOfWeek, hourOfDay])
+}
