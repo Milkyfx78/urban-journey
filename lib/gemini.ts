@@ -1,7 +1,17 @@
 import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai';
 import { Platform } from '@prisma/client';
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY ?? '');
+// Created lazily so a missing GEMINI_API_KEY only breaks the request that needs it, not the
+// whole `next build` (which imports every route module to collect page data).
+let cachedGenAI: GoogleGenerativeAI | null = null;
+
+function getGenAI(): GoogleGenerativeAI {
+  if (cachedGenAI) return cachedGenAI;
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) throw new Error('GEMINI_API_KEY must be set to analyze content or generate captions');
+  cachedGenAI = new GoogleGenerativeAI(apiKey);
+  return cachedGenAI;
+}
 
 export interface ContentAnalysisResult {
   summary: string;
@@ -29,7 +39,7 @@ export async function analyzeContent(params: {
   mediaBase64: string;
   mimeType: string;
 }): Promise<ContentAnalysisResult> {
-  const model = genAI.getGenerativeModel({
+  const model = getGenAI().getGenerativeModel({
     model: 'gemini-2.0-flash',
     generationConfig: { responseMimeType: 'application/json', responseSchema: analysisSchema as any }
   });
@@ -80,7 +90,7 @@ export async function generateCaption(params: {
   analysis: ContentAnalysisResult;
   platform: Platform;
 }): Promise<CaptionVariant> {
-  const model = genAI.getGenerativeModel({
+  const model = getGenAI().getGenerativeModel({
     model: 'gemini-2.0-flash',
     generationConfig: { responseMimeType: 'application/json', responseSchema: captionSchema as any }
   });
@@ -127,7 +137,7 @@ export async function generateCaptionVariants(params: {
   platform: Platform;
   count: 2 | 3;
 }): Promise<CaptionVariant[]> {
-  const model = genAI.getGenerativeModel({
+  const model = getGenAI().getGenerativeModel({
     model: 'gemini-2.0-flash',
     generationConfig: { responseMimeType: 'application/json', responseSchema: captionSchema as any }
   });
